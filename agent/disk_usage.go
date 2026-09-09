@@ -54,7 +54,7 @@ func formatBytes(bytes uint64) string {
 }
 
 // fastDirSize calculates size with depth and item limits
-func fastDirSize(path string, maxDepth int, maxItems int) uint64 {
+func fastDirSize(path string, maxDepth int, maxItems int, maxFileSize uint64) uint64 {
 	var totalSize uint64
 	var count int
 
@@ -317,7 +317,10 @@ func (dum *DiskUsageManager) GetReport(force bool) (*diskusage.DiskUsageReport, 
 	var sumCategorized uint64
 
 	for _, tg := range targets {
-		size := fastDirSize(tg.path, 4, 30000)
+		size := fastDirSize(tg.path, 4, 30000, totalBytes)
+		if totalBytes > 0 && size > totalBytes {
+			size = totalBytes
+		}
 		if size < 20*1024*1024 { // skip items smaller than 20MB to keep list clean
 			continue
 		}

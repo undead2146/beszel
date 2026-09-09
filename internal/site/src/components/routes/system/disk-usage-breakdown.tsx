@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { pb, isReadOnlyUser } from "@/lib/api"
+import { formatBytes } from "@/lib/utils"
 import type { DiskUsageReport, DiskCategoryItem } from "@/types"
 import {
 	HardDrive,
@@ -311,11 +312,11 @@ export function DiskUsageBreakdown({ systemId }: { systemId: string }) {
 											</TooltipProvider>
 										</TableCell>
 
-										<TableCell className="text-right font-semibold">{item.sizeHuman}</TableCell>
+										<TableCell className="text-right font-semibold">{item.size > (report.totalBytes || Infinity) ? formatBytes(Math.min(item.size, report.usedBytes)) : item.sizeHuman}</TableCell>
 
 										<TableCell className="text-right">
 											<div className="flex items-center justify-end gap-2">
-												<span className="text-xs text-muted-foreground">{item.percentDisk.toFixed(1)}%</span>
+												<span className="text-xs text-muted-foreground">{Math.min(item.percentDisk, 100).toFixed(1)}%</span>
 												<div className="w-12 h-1.5 bg-muted rounded-full overflow-hidden">
 													<div
 														className="h-full rounded-full"
@@ -398,3 +399,6 @@ export function DiskUsageBreakdown({ systemId }: { systemId: string }) {
 		</Card>
 	)
 }
+
+export default DiskUsageBreakdown
+
