@@ -18,6 +18,7 @@ import (
 	"github.com/henrygd/beszel/internal/hub/ws"
 
 	"github.com/henrygd/beszel/internal/entities/container"
+	"github.com/henrygd/beszel/internal/entities/diskusage"
 	"github.com/henrygd/beszel/internal/entities/smart"
 	"github.com/henrygd/beszel/internal/entities/system"
 	"github.com/henrygd/beszel/internal/entities/systemd"
@@ -613,6 +614,15 @@ func (sys *System) FetchSmartDataFromAgent() (smart.SmartDataResponse, error) {
 }
 
 // FetchZfsDataFromAgent fetches ZFS detail data from the agent.
+// FetchDiskUsageFromAgent fetches disk usage categorization from the agent.
+func (sys *System) FetchDiskUsageFromAgent(force bool) (*diskusage.DiskUsageReport, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	var result diskusage.DiskUsageReport
+	err := sys.request(ctx, common.GetDiskUsage, common.DiskUsageRequest{Force: force}, &result)
+	return &result, err
+}
+
 func (sys *System) FetchZfsDataFromAgent(force bool) (*zfs.ZfsData, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()

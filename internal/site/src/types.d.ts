@@ -616,3 +616,26 @@ export interface UpdateInfo {
 	v: string // new version
 	url: string // url to new version
 }
+
+export interface DiskCategoryItem {
+	name: string
+	category: string
+	path: string
+	size: number
+	sizeHuman: string
+	percentDisk: number
+	status: 'clean' | 'warning' | 'bloated'
+	cleanupCmd: string
+	description: string
+}
+
+export interface DiskUsageReport {
+	totalBytes: number
+	usedBytes: number
+	freeBytes: number
+	usedPercent: number
+	rootMount: string
+	categories: DiskCategoryItem[]
+	timestamp: number
+	scannedPaths: number
+}

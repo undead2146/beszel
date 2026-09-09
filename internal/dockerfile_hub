@@ -1,34 +1,24 @@
-FROM --platform=$BUILDPLATFORM golang:alpine AS builder
-
+FROM oven/bun:alpine AS site-builder
 WORKDIR /app
+COPY internal/site/package.json ./
+RUN bun install
+COPY internal/site/ ./
+RUN bun run build
 
-# Download Go modules
-COPY ../go.mod ../go.sum ./
+FROM golang:alpine AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
 RUN go mod download
-
-# Copy source files
 COPY . ./
-
-RUN apk add --no-cache \
-    unzip \
-    ca-certificates
-
-RUN update-ca-certificates
-
-# Build
+COPY --from=site-builder /app/dist ./internal/site/dist
+RUN apk add --no-cache unzip ca-certificates && update-ca-certificates
 ARG TARGETOS TARGETARCH
 RUN CGO_ENABLED=0 GOGC=75 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -ldflags "-w -s" -o /beszel ./internal/cmd/hub
 
-# ? -------------------------
 FROM scratch
-
 COPY --from=builder /beszel /
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-
-# Ensure data persistence across container recreations
 VOLUME ["/beszel_data"]
-
 EXPOSE 8090
-
 ENTRYPOINT [ "/beszel" ]
 CMD ["serve", "--http=0.0.0.0:8090"]

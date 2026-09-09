@@ -142,6 +142,8 @@ export default memo(function SystemDetail({ id }: { id: string }) {
 					/>
 				)}
 
+				<DiskUsageBreakdown systemId={system.id} />
+
 				<ExtraFsCharts systemData={systemData} />
 
 				{hasZfs && <ZfsCharts systemData={systemData} />}
@@ -206,6 +208,7 @@ export default memo(function SystemDetail({ id }: { id: string }) {
 				<TabsContent value="disk" forceMount className={activeTab === "disk" ? "contents" : "hidden"}>
 					{mountedTabs.has("disk") && (
 						<>
+							<DiskUsageBreakdown systemId={system.id} />
 							<div className="grid xl:grid-cols-2 gap-4">
 								<RootDiskCharts systemData={systemData} />
 							</div>

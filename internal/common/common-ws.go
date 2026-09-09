@@ -24,6 +24,8 @@ const (
 	GetSystemdInfo
 	// Request ZFS detail data from agent
 	GetZfsData
+	// Request disk usage categorization from agent
+	GetDiskUsage
 	// Add new actions here...
 )
 
@@ -80,4 +82,8 @@ type ContainerInfoRequest struct {
 
 type SystemdInfoRequest struct {
 	ServiceName string `cbor:"0,keyasint"`
+}
+
+type DiskUsageRequest struct {
+	Force bool `cbor:"0,keyasint,omitempty"`
 }

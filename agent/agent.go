@@ -49,6 +49,7 @@ type Agent struct {
 	smartManager              *SmartManager                                         // Manages SMART data
 	systemdManager            *systemdManager                                       // Manages systemd services
 	zfsManager                *ZfsManager                                           // Manages ZFS pool and dataset data
+	diskUsageManager          *DiskUsageManager                                     // Manages disk usage categorization
 }
 
 // NewAgent creates a new agent with the given data directory for persisting data.
@@ -150,6 +151,8 @@ func NewAgent(dataDir ...string) (agent *Agent, err error) {
 	if err != nil {
 		slog.Debug("SMART", "err", err)
 	}
+
+	agent.diskUsageManager = NewDiskUsageManager(agent)
 
 	// initialize GPU manager
 	agent.gpuManager, err = NewGPUManager()

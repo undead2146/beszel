@@ -127,6 +127,10 @@ func (h *Hub) registerApiRoutes(se *core.ServeEvent) error {
 	apiAuth.POST("/smart/refresh", h.refreshSmartData).BindFunc(excludeReadOnlyRole)
 	// refresh ZFS pool details for a system
 	apiAuth.POST("/zfs/refresh", h.refreshZfsData).BindFunc(excludeReadOnlyRole)
+	// get disk usage categorization
+	apiAuth.GET("/disk-usage", h.getDiskUsage)
+	// refresh disk usage categorization
+	apiAuth.POST("/disk-usage/refresh", h.refreshDiskUsage).BindFunc(excludeReadOnlyRole)
 	// get systemd service details
 	apiAuth.GET("/systemd/info", h.getSystemdInfo)
 	// /containers routes
@@ -410,4 +414,44 @@ func (h *Hub) refreshZfsData(e *core.RequestEvent) error {
 	}
 
 	return e.JSON(http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// getDiskUsage handles GET /api/beszel/disk-usage requests
+func (h *Hub) getDiskUsage(e *core.RequestEvent) error {
+	systemID := e.Request.URL.Query().Get("system")
+	if systemID == "" {
+		return e.BadRequestError("Invalid system parameter", nil)
+	}
+
+	system, err := h.sm.GetSystem(systemID)
+	if err != nil || !system.HasUser(e.App, e.Auth) {
+		return e.NotFoundError("", nil)
+	}
+
+	report, err := system.FetchDiskUsageFromAgent(false)
+	if err != nil {
+		return e.InternalServerError("Failed to fetch disk usage", err)
+	}
+
+	return e.JSON(http.StatusOK, report)
+}
+
+// refreshDiskUsage handles POST /api/beszel/disk-usage/refresh requests
+func (h *Hub) refreshDiskUsage(e *core.RequestEvent) error {
+	systemID := e.Request.URL.Query().Get("system")
+	if systemID == "" {
+		return e.BadRequestError("Invalid system parameter", nil)
+	}
+
+	system, err := h.sm.GetSystem(systemID)
+	if err != nil || !system.HasUser(e.App, e.Auth) {
+		return e.NotFoundError("", nil)
+	}
+
+	report, err := system.FetchDiskUsageFromAgent(true)
+	if err != nil {
+		return e.InternalServerError("Failed to refresh disk usage", err)
+	}
+
+	return e.JSON(http.StatusOK, report)
 }

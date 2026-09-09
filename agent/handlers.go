@@ -7,6 +7,7 @@ import (
 
 	"github.com/fxamacker/cbor/v2"
 	"github.com/henrygd/beszel/internal/common"
+	"github.com/henrygd/beszel/internal/entities/diskusage"
 	"github.com/henrygd/beszel/internal/entities/smart"
 
 	"log/slog"
@@ -52,6 +53,7 @@ func NewHandlerRegistry() *HandlerRegistry {
 	registry.Register(common.GetSmartData, &GetSmartDataHandler{})
 	registry.Register(common.GetSystemdInfo, &GetSystemdInfoHandler{})
 	registry.Register(common.GetZfsData, &GetZfsDataHandler{})
+	registry.Register(common.GetDiskUsage, &GetDiskUsageHandler{})
 
 	return registry
 }
@@ -222,4 +224,22 @@ func (h *GetSystemdInfoHandler) Handle(hctx *HandlerContext) error {
 	}
 
 	return hctx.SendResponse(details, hctx.RequestID)
+}
+
+// GetDiskUsageHandler handles disk usage breakdown requests
+type GetDiskUsageHandler struct{}
+
+func (h *GetDiskUsageHandler) Handle(hctx *HandlerContext) error {
+	if hctx.Agent.diskUsageManager == nil {
+		return hctx.SendResponse(diskusage.DiskUsageReport{}, hctx.RequestID)
+	}
+	var req common.DiskUsageRequest
+	if len(hctx.Request.Data) > 0 {
+		_ = cbor.Unmarshal(hctx.Request.Data, &req)
+	}
+	report, err := hctx.Agent.diskUsageManager.GetReport(req.Force)
+	if err != nil {
+		slog.Debug("disk usage report failed", "err", err)
+	}
+	return hctx.SendResponse(report, hctx.RequestID)
 }
