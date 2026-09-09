@@ -1,10 +1,11 @@
 # Node.js dependencies
 node_modules
-internalsite/node_modules
+internal/site/node_modules
 
 # Go build artifacts and binaries
 build
-dist
+!internal/site/dist
+
 *.exe
 beszel-agent
 beszel_data*

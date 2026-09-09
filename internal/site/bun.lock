@@ -46,7 +46,7 @@
       "devDependencies": {
         "@biomejs/biome": "2.2.4",
         "@lingui/cli": "^5.4.1",
-        "@lingui/swc-plugin": "^5.6.1",
+        "@lingui/swc-plugin": "^6.7.0",
         "@lingui/vite-plugin": "^5.4.1",
         "@tailwindcss/container-queries": "^0.1.1",
         "@tailwindcss/vite": "^4.1.12",
@@ -221,7 +221,7 @@
 
     "@lingui/react": ["@lingui/react@5.4.1", "", { "dependencies": { "@babel/runtime": "^7.20.13", "@lingui/core": "5.4.1" }, "peerDependencies": { "@lingui/babel-plugin-lingui-macro": "5.4.1", "babel-plugin-macros": "2 || 3", "react": "^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0" }, "optionalPeers": ["babel-plugin-macros"] }, "sha512-BfWHRTyu+Je4Km9ZYCTgFuRHgQI9TJa/fMYKJBw3dNy3I09oIqnJ21qbdDimnb/Z9ztMCGQ75EIFoqAB6bdwaw=="],
 
-    "@lingui/swc-plugin": ["@lingui/swc-plugin@5.6.1", "", { "peerDependencies": { "@lingui/core": "5" } }, "sha512-kT/ghCKMlTa+SJZU/xn2vvU1QE3/NO3m3Feg6r2OVOovAB6VHKShVElU5truBC2KXn/cPqE9Kz2Yj0+jUmO6xQ=="],
+    "@lingui/swc-plugin": ["@lingui/swc-plugin@6.7.0", "", { "dependencies": { "@lingui/conf": "5 || 6" }, "peerDependencies": { "@lingui/core": "5 || 6" } }, "sha512-TRLHfeQT/q9JXy0cBGOtbfcEWJFF1szjPCVM4AT1HdZyfGj+dQ0r8hHq+08c4iXZLzlsYilzw+bZJ3TahG5g5w=="],
 
     "@lingui/vite-plugin": ["@lingui/vite-plugin@5.4.1", "", { "dependencies": { "@lingui/cli": "5.4.1", "@lingui/conf": "5.4.1" }, "peerDependencies": { "vite": "^3 || ^4 || ^5.0.9 || ^6 || ^7" } }, "sha512-4BxkHliJdGk7lmD++Bee9iy+n66kUONUPgpNqEgcuoEfaL0UgWWLbpkOr42X3tMUVt/S/SUM7firx6NexSCJ4Q=="],
 
