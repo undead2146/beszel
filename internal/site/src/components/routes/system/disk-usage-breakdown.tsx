@@ -104,8 +104,10 @@ export function DiskUsageBreakdown({ systemId }: { systemId: string }) {
 
 		// Group categories for cleaner chart
 		const catTotals: Record<string, number> = {}
+		let sumCatBytes = 0
 		for (const cat of report.categories) {
 			catTotals[cat.category] = (catTotals[cat.category] || 0) + cat.size
+			sumCatBytes += cat.size
 		}
 
 		for (const [catName, sizeBytes] of Object.entries(catTotals)) {
@@ -113,9 +115,22 @@ export function DiskUsageBreakdown({ systemId }: { systemId: string }) {
 			items.push({
 				name: catName,
 				value: sizeGB,
-				color: CATEGORY_COLORS[catName] || "#94a3b8",
+				color: CATEGORY_COLORS[catName] || CATEGORY_COLORS.Other,
 				human: `${sizeGB} GB`,
 			})
+		}
+
+		if (report.usedBytes > sumCatBytes) {
+			const otherBytes = report.usedBytes - sumCatBytes
+			const otherGB = Number((otherBytes / (1024 * 1024 * 1024)).toFixed(2))
+			if (otherGB >= 0.1) {
+				items.push({
+					name: "Other Files",
+					value: otherGB,
+					color: CATEGORY_COLORS.Other,
+					human: `${otherGB} GB`,
+				})
+			}
 		}
 
 		if (report.freeBytes > 0) {
@@ -138,8 +153,19 @@ export function DiskUsageBreakdown({ systemId }: { systemId: string }) {
 
 	const reclaimableSize = useMemo(() => {
 		if (!report?.categories) return ""
+		const isCleanable = (cmd?: string) => {
+			if (!cmd) return false
+			const lower = cmd.toLowerCase()
+			return (
+				lower.includes("clean") ||
+				lower.includes("prune") ||
+				lower.includes("purge") ||
+				lower.includes("rm -rf") ||
+				lower.includes("vacuum")
+			)
+		}
 		const bytes = report.categories
-			.filter((c) => (c.status === "bloated" || c.status === "warning") && c.cleanupCmd)
+			.filter((c) => (c.status === "bloated" || c.status === "warning") && isCleanable(c.cleanupCmd))
 			.reduce((acc, c) => acc + c.size, 0)
 		if (bytes === 0) return ""
 		const gb = (bytes / (1024 * 1024 * 1024)).toFixed(1)

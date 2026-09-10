@@ -3,7 +3,6 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -53,46 +52,6 @@ func formatBytes(bytes uint64) string {
 	}
 }
 
-// fastDirSize calculates size with depth and item limits
-func fastDirSize(path string, maxDepth int, maxItems int, maxFileSize uint64) uint64 {
-	var totalSize uint64
-	var count int
-
-	var walk func(p string, depth int)
-	walk = func(p string, depth int) {
-		if depth > maxDepth || count >= maxItems {
-			return
-		}
-		entries, err := os.ReadDir(p)
-		if err != nil {
-			return
-		}
-		for _, entry := range entries {
-			count++
-			if count >= maxItems {
-				return
-			}
-			info, err := entry.Info()
-			if err != nil {
-				continue
-			}
-			mode := info.Mode()
-			// Skip symlinks, sockets, fifos, devices
-			if mode&fs.ModeSymlink != 0 || mode&fs.ModeSocket != 0 || mode&fs.ModeNamedPipe != 0 || mode&fs.ModeDevice != 0 {
-				continue
-			}
-			if entry.IsDir() {
-				walk(filepath.Join(p, entry.Name()), depth+1)
-			} else {
-				totalSize += uint64(info.Size())
-			}
-		}
-	}
-
-	walk(path, 0)
-	return totalSize
-}
-
 func (dum *DiskUsageManager) GetReport(force bool) (*diskusage.DiskUsageReport, error) {
 	dum.mu.Lock()
 	defer dum.mu.Unlock()
@@ -133,29 +92,31 @@ func (dum *DiskUsageManager) GetReport(force bool) (*diskusage.DiskUsageReport, 
 		usedPercent = usage.UsedPercent
 	}
 
-	// Check for pre-generated disk breakdown JSON file (from host helper or cron)
+	// Check for pre-generated disk breakdown JSON file
 	customJsonPaths := []string{
 		"/var/lib/beszel-agent/disk_breakdown.json",
 		"/etc/beszel/disk_breakdown.json",
 	}
 	if hostPrefix != "" {
-		customJsonPaths = append([]string{filepath.Join(hostPrefix, "var/lib/beszel-agent/disk_breakdown.json")}, customJsonPaths...)
+		customJsonPaths = append([]string{
+			filepath.Join(hostPrefix, "var/lib/beszel-agent/disk_breakdown.json"),
+			filepath.Join(hostPrefix, "etc/beszel/disk_breakdown.json"),
+		}, customJsonPaths...)
 	}
 
-	for _, cjp := range customJsonPaths {
-		if data, err := os.ReadFile(cjp); err == nil {
-			var fileReport diskusage.DiskUsageReport
-			if err := json.Unmarshal(data, &fileReport); err == nil && len(fileReport.Categories) > 0 {
-				if fileReport.TotalBytes > 0 {
-					totalBytes = fileReport.TotalBytes
-					usedBytes = fileReport.UsedBytes
-					freeBytes = fileReport.FreeBytes
-					usedPercent = fileReport.UsedPercent
-				}
-				fileReport.Timestamp = time.Now().Unix()
-				dum.lastReport = &fileReport
+	for _, p := range customJsonPaths {
+		if data, err := os.ReadFile(p); err == nil {
+			var customReport diskusage.DiskUsageReport
+			if err := json.Unmarshal(data, &customReport); err == nil && len(customReport.Categories) > 0 {
+				customReport.TotalBytes = totalBytes
+				customReport.UsedBytes = usedBytes
+				customReport.FreeBytes = freeBytes
+				customReport.UsedPercent = usedPercent
+				customReport.RootMount = rootPath
+				customReport.Timestamp = time.Now().Unix()
+				dum.lastReport = &customReport
 				dum.lastScanned = time.Now()
-				return &fileReport, nil
+				return &customReport, nil
 			}
 		}
 	}
@@ -163,11 +124,11 @@ func (dum *DiskUsageManager) GetReport(force bool) (*diskusage.DiskUsageReport, 
 	// Discover user home directories
 	var userHomes []string
 	if runtime.GOOS == "windows" {
-		usersDir := `C:\Users`
-		if entries, err := os.ReadDir(usersDir); err == nil {
+		usersRoot := filepath.Join(rootPath, "Users")
+		if entries, err := os.ReadDir(usersRoot); err == nil {
 			for _, entry := range entries {
-				if entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") && entry.Name() != "Public" && entry.Name() != "Default" {
-					userHomes = append(userHomes, filepath.Join(usersDir, entry.Name()))
+				if entry.IsDir() && !strings.HasPrefix(entry.Name(), ".") && entry.Name() != "Default" && entry.Name() != "Public" {
+					userHomes = append(userHomes, filepath.Join(usersRoot, entry.Name()))
 				}
 			}
 		}
@@ -192,31 +153,114 @@ func (dum *DiskUsageManager) GetReport(force bool) (*diskusage.DiskUsageReport, 
 		}
 	}
 
-	type targetScan struct {
-		name        string
-		category    string
-		path        string
-		displayPath string
-		cleanupCmd  string
-		description string
+	prefixPath := func(p string) string {
+		if hostPrefix != "" {
+			return filepath.Join(hostPrefix, strings.TrimPrefix(p, "/"))
+		}
+		return p
 	}
 
-	var targets []targetScan
+	var categories []diskusage.DiskCategoryItem
 
-	// Scan homes for workspaces, state, caches
+	// 1. Docker & Container storage (measured via Docker API for 100% accuracy without overlay2 bloat)
+	dockerMeasured := false
+	if dum.agent != nil && dum.agent.dockerManager != nil {
+		if dockerSize, reclaimable, err := dum.agent.dockerManager.getDiskUsage(); err == nil && dockerSize > 0 {
+			dockerMeasured = true
+			if usedBytes > 0 && dockerSize > usedBytes {
+				dockerSize = usedBytes
+			}
+			pct := float64(0)
+			if totalBytes > 0 {
+				pct = (float64(dockerSize) / float64(totalBytes)) * 100.0
+			}
+			status := "clean"
+			cleanup := "docker system prune -af --volumes"
+			if reclaimable > 2*1024*1024*1024 {
+				status = "warning"
+				cleanup = fmt.Sprintf("docker system prune -af --volumes (reclaims ~%s)", formatBytes(reclaimable))
+			} else if reclaimable > 500*1024*1024 {
+				cleanup = fmt.Sprintf("docker image prune -af (reclaims ~%s)", formatBytes(reclaimable))
+			}
+
+			categories = append(categories, diskusage.DiskCategoryItem{
+				Name:        "Docker Storage",
+				Category:    "Docker & Containers",
+				Path:        "/var/lib/docker",
+				Size:        dockerSize,
+				SizeHuman:   formatBytes(dockerSize),
+				PercentDisk: pct,
+				Status:      status,
+				CleanupCmd:  cleanup,
+				Description: "Docker container layers, images, and local volumes",
+			})
+		}
+	}
+
+	// Fallback for Docker if API not accessible
+	if !dockerMeasured {
+		realDockerPath := prefixPath("/var/lib/docker")
+		if fi, err := os.Stat(realDockerPath); err == nil && fi.IsDir() {
+			dockerSize := calculateDirSize(realDockerPath, 10)
+			if usedBytes > 0 && dockerSize > usedBytes {
+				dockerSize = usedBytes
+			}
+			if dockerSize >= 20*1024*1024 {
+				pct := float64(0)
+				if totalBytes > 0 {
+					pct = (float64(dockerSize) / float64(totalBytes)) * 100.0
+				}
+				status := "clean"
+				if dockerSize > 10*1024*1024*1024 {
+					status = "warning"
+				}
+				categories = append(categories, diskusage.DiskCategoryItem{
+					Name:        "Docker Storage",
+					Category:    "Docker & Containers",
+					Path:        "/var/lib/docker",
+					Size:        dockerSize,
+					SizeHuman:   formatBytes(dockerSize),
+					PercentDisk: pct,
+					Status:      status,
+					CleanupCmd:  "docker system prune -af --volumes",
+					Description: "Docker container layers, images, and local volumes",
+				})
+			}
+		}
+	}
+
+	// 2. Scan homes for Workspaces, AI & Agent State, and Package Caches
 	workspaceNames := []string{"workspaces", "workspace", "t3code", "projects", "code", "dev", "git"}
 	for _, home := range userHomes {
 		userName := filepath.Base(home)
 		for _, ws := range workspaceNames {
 			p := filepath.Join(home, ws)
 			if fi, err := os.Stat(p); err == nil && fi.IsDir() {
-				targets = append(targets, targetScan{
-					name:        fmt.Sprintf("Workspaces (%s/%s)", userName, ws),
-					category:    "Workspaces",
-					path:        p,
-					displayPath: fmt.Sprintf("~%s/%s", userName, ws),
-					cleanupCmd:  "Review unused git branches, temporary test runs, and stale build output",
-					description: "Development projects, git repositories, and active workspaces",
+				size := calculateDirSize(p, 15)
+				if usedBytes > 0 && size > usedBytes {
+					size = usedBytes
+				}
+				if size < 20*1024*1024 {
+					continue
+				}
+				pct := float64(0)
+				if totalBytes > 0 {
+					pct = (float64(size) / float64(totalBytes)) * 100.0
+				}
+				status := "clean"
+				if size > 30*1024*1024*1024 {
+					status = "warning"
+				}
+				categories = append(categories, diskusage.DiskCategoryItem{
+					Name:        fmt.Sprintf("Workspaces (%s/%s)", userName, ws),
+					Category:    "Workspaces",
+					Path:        fmt.Sprintf("~%s/%s", userName, ws),
+					Size:        size,
+					SizeHuman:   formatBytes(size),
+					PercentDisk: pct,
+					Status:      status,
+					CleanupCmd:  "Review unused git branches, temporary test runs, and stale build output",
+					Description: "Active code checkouts, git repositories, and dependencies",
 				})
 			}
 		}
@@ -225,23 +269,44 @@ func (dum *DiskUsageManager) GetReport(force bool) (*diskusage.DiskUsageReport, 
 		agentDirs := []struct {
 			dir  string
 			name string
+			cmd  string
 		}{
-			{".t3", "T3 Agent & State"},
-			{".gemini", "Gemini CLI State"},
-			{".claude", "Claude Code State"},
-			{".agents", "Agent Workspaces & Skills"},
-			{".local", "Local User Binaries & State"},
+			{".t3", "T3 Agent & State", "rm -rf ~/.t3/worktrees/* ~/.t3/userdata/logs/*"},
+			{".gemini", "Gemini CLI State", "rm -rf ~/.gemini/tmp/*"},
+			{".claude", "Claude Code State", ""},
+			{".agents", "Agent Workspaces & Skills", ""},
+			{".local", "Local User Binaries & State", "rm -rf ~/.local/share/Trash/*"},
 		}
 		for _, ad := range agentDirs {
 			p := filepath.Join(home, ad.dir)
 			if fi, err := os.Stat(p); err == nil && fi.IsDir() {
-				targets = append(targets, targetScan{
-					name:        fmt.Sprintf("%s (%s)", ad.name, userName),
-					category:    "AI & Agent State",
-					path:        p,
-					displayPath: fmt.Sprintf("~%s/%s", userName, ad.dir),
-					cleanupCmd:  "rm -rf ~/.t3/worktrees/* ~/.t3/userdata/logs/*",
-					description: "Agent toolchains, runtime checkouts, and log artifacts",
+				size := calculateDirSize(p, 15)
+				if usedBytes > 0 && size > usedBytes {
+					size = usedBytes
+				}
+				if size < 20*1024*1024 {
+					continue
+				}
+				pct := float64(0)
+				if totalBytes > 0 {
+					pct = (float64(size) / float64(totalBytes)) * 100.0
+				}
+				status := "clean"
+				if size > 15*1024*1024*1024 {
+					status = "bloated"
+				} else if size > 5*1024*1024*1024 && ad.cmd != "" {
+					status = "warning"
+				}
+				categories = append(categories, diskusage.DiskCategoryItem{
+					Name:        fmt.Sprintf("%s (%s)", ad.name, userName),
+					Category:    "AI & Agent State",
+					Path:        fmt.Sprintf("~%s/%s", userName, ad.dir),
+					Size:        size,
+					SizeHuman:   formatBytes(size),
+					PercentDisk: pct,
+					Status:      status,
+					CleanupCmd:  ad.cmd,
+					Description: "Agent toolchains, runtime checkouts, and log artifacts",
 				})
 			}
 		}
@@ -262,120 +327,94 @@ func (dum *DiskUsageManager) GetReport(force bool) (*diskusage.DiskUsageReport, 
 		for _, pc := range pkgCaches {
 			p := filepath.Join(home, pc.dir)
 			if fi, err := os.Stat(p); err == nil && fi.IsDir() {
-				targets = append(targets, targetScan{
-					name:        fmt.Sprintf("%s (%s)", pc.name, userName),
-					category:    "Package Caches",
-					path:        p,
-					displayPath: fmt.Sprintf("~%s/%s", userName, pc.dir),
-					cleanupCmd:  pc.cmd,
-					description: pc.desc,
+				size := calculateDirSize(p, 15)
+				if usedBytes > 0 && size > usedBytes {
+					size = usedBytes
+				}
+				if size < 20*1024*1024 {
+					continue
+				}
+				pct := float64(0)
+				if totalBytes > 0 {
+					pct = (float64(size) / float64(totalBytes)) * 100.0
+				}
+				status := "clean"
+				if size > 3*1024*1024*1024 {
+					status = "bloated"
+				} else if size > 1*1024*1024*1024 {
+					status = "warning"
+				}
+				categories = append(categories, diskusage.DiskCategoryItem{
+					Name:        fmt.Sprintf("%s (%s)", pc.name, userName),
+					Category:    "Package Caches",
+					Path:        fmt.Sprintf("~%s/%s", userName, pc.dir),
+					Size:        size,
+					SizeHuman:   formatBytes(size),
+					PercentDisk: pct,
+					Status:      status,
+					CleanupCmd:  pc.cmd,
+					Description: pc.desc,
 				})
 			}
 		}
 	}
 
-	// System directories
-	prefixPath := func(p string) string {
-		if hostPrefix != "" {
-			return filepath.Join(hostPrefix, strings.TrimPrefix(p, "/"))
-		}
-		return p
-	}
-
+	// 3. System targets
 	sysTargets := []struct {
 		path        string
 		name        string
 		category    string
 		cleanupCmd  string
 		description string
+		maxDepth    int
 	}{
-		{"/var/log", "System Logs", "System Logs", "sudo journalctl --vacuum-size=100M && sudo journalctl --vacuum-time=7d", "Systemd journal archives and syslog logs"},
-		{"/var/cache/apt", "APT Package Cache", "Package Caches", "sudo apt-get clean && sudo apt-get autoremove -y", "Downloaded Debian/Ubuntu .deb archives"},
-		{"/var/lib/docker", "Docker Storage", "Docker & Containers", "docker system prune -af --volumes", "Docker container writable layers, unused images, and buildkit caches"},
-		{"/snap", "Snap Packages", "Snaps & Packages", "snap list --all", "Canonical Snap installed versions and revisions"},
-		{"/var/lib/snapd", "Snapd State", "Snaps & Packages", "sudo rm -rf /var/lib/snapd/cache/*", "Snap daemon download cache and mountpoints"},
-		{"/tmp", "Temporary Files", "Temporary Files", "sudo rm -rf /tmp/* /var/tmp/*", "Ephemeral OS temp files and socket links"},
-		{"/usr", "System Binaries & Libs", "System Binaries", "sudo apt-get --purge autoremove -y", "Core operating system binaries and shared libraries"},
+		{"/var/log", "System Logs", "System Logs", "sudo journalctl --vacuum-size=100M && sudo journalctl --vacuum-time=7d", "Systemd journal archives and syslog logs", 10},
+		{"/var/cache/apt", "APT Package Cache", "Package Caches", "sudo apt-get clean && sudo apt-get autoremove -y", "Downloaded Debian/Ubuntu .deb archives", 10},
+		{"/snap", "Snap Packages", "Snaps & Packages", "snap list --all", "Canonical Snap installed versions and revisions", 10},
+		{"/var/lib/snapd", "Snapd State", "Snaps & Packages", "sudo rm -rf /var/lib/snapd/cache/*", "Snap daemon download cache and mountpoints", 10},
+		{"/tmp", "Temporary Files", "Temporary Files", "sudo rm -rf /tmp/* /var/tmp/*", "Ephemeral OS temp files and socket links", 10},
+		{"/usr", "System Binaries & Libs", "System Binaries", "", "Core operating system binaries and shared libraries", 4},
 	}
 
 	for _, st := range sysTargets {
 		realPath := prefixPath(st.path)
 		if fi, err := os.Stat(realPath); err == nil && fi.IsDir() {
-			targets = append(targets, targetScan{
-				name:        st.name,
-				category:    st.category,
-				path:        realPath,
-				displayPath: st.path,
-				cleanupCmd:  st.cleanupCmd,
-				description: st.description,
+			size := calculateDirSize(realPath, st.maxDepth)
+			if usedBytes > 0 && size > usedBytes {
+				size = usedBytes
+			}
+			if size < 20*1024*1024 {
+				continue
+			}
+			pct := float64(0)
+			if totalBytes > 0 {
+				pct = (float64(size) / float64(totalBytes)) * 100.0
+			}
+			status := "clean"
+			if st.path == "/tmp" && size > 2*1024*1024*1024 {
+				status = "warning"
+			}
+			if st.path == "/var/log" && size > 2*1024*1024*1024 {
+				status = "warning"
+			}
+			categories = append(categories, diskusage.DiskCategoryItem{
+				Name:        st.name,
+				Category:    st.category,
+				Path:        st.path,
+				Size:        size,
+				SizeHuman:   formatBytes(size),
+				PercentDisk: pct,
+				Status:      status,
+				CleanupCmd:  st.cleanupCmd,
+				Description: st.description,
 			})
 		}
 	}
 
-	// Calculate sizes
-	var categories []diskusage.DiskCategoryItem
-	var sumCategorized uint64
-
-	for _, tg := range targets {
-		size := fastDirSize(tg.path, 4, 30000, totalBytes)
-		if totalBytes > 0 && size > totalBytes {
-			size = totalBytes
-		}
-		if size < 20*1024*1024 { // skip items smaller than 20MB to keep list clean
-			continue
-		}
-
-		sumCategorized += size
-
-		pct := float64(0)
-		if totalBytes > 0 {
-			pct = (float64(size) / float64(totalBytes)) * 100.0
-		}
-
-		status := "clean"
-		if size >= 3*1024*1024*1024 { // 3 GB+
-			status = "bloated"
-		} else if size >= 1*1024*1024*1024 { // 1 GB+
-			status = "warning"
-		}
-
-		categories = append(categories, diskusage.DiskCategoryItem{
-			Name:        tg.name,
-			Category:    tg.category,
-			Path:        tg.displayPath,
-			Size:        size,
-			SizeHuman:   formatBytes(size),
-			PercentDisk: pct,
-			Status:      status,
-			CleanupCmd:  tg.cleanupCmd,
-			Description: tg.description,
-		})
-	}
-
-	// Sort categories by size descending
+	// Sort by size descending
 	sort.Slice(categories, func(i, j int) bool {
 		return categories[i].Size > categories[j].Size
 	})
-
-	// Add Other / Uncategorized if used space exceeds categorized sum
-	if usedBytes > sumCategorized && (usedBytes-sumCategorized) > 100*1024*1024 {
-		otherSize := usedBytes - sumCategorized
-		otherPct := float64(0)
-		if totalBytes > 0 {
-			otherPct = (float64(otherSize) / float64(totalBytes)) * 100.0
-		}
-		categories = append(categories, diskusage.DiskCategoryItem{
-			Name:        "Other / Uncategorized",
-			Category:    "Other",
-			Path:        "(Root filesystem other files)",
-			Size:        otherSize,
-			SizeHuman:   formatBytes(otherSize),
-			PercentDisk: otherPct,
-			Status:      "clean",
-			CleanupCmd:  "",
-			Description: "Operating system base files, unmonitored home folders, and kernel modules",
-		})
-	}
 
 	report := &diskusage.DiskUsageReport{
 		TotalBytes:   totalBytes,
@@ -388,9 +427,9 @@ func (dum *DiskUsageManager) GetReport(force bool) (*diskusage.DiskUsageReport, 
 		ScannedPaths: len(categories),
 	}
 
-	dum.lastReport = report
-	dum.lastScanned = time.Now()
 	slog.Info("Disk usage breakdown complete", "categories", len(categories), "used", formatBytes(usedBytes))
 
+	dum.lastReport = report
+	dum.lastScanned = time.Now()
 	return report, nil
 }

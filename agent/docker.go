@@ -1019,3 +1019,82 @@ func detectPodmanEngine(serverHeader string, versionInfo *dockerVersionResponse)
 	}
 	return detectPodmanFromVersion(versionInfo)
 }
+
+
+// getDiskUsage returns total docker disk usage and reclaimable space in bytes
+func (dm *dockerManager) getDiskUsage() (uint64, uint64, error) {
+	if dm == nil || dm.client == nil {
+		return 0, 0, errors.New("docker manager not available")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://localhost/system/df", nil)
+	if err != nil {
+		return 0, 0, err
+	}
+
+	resp, err := dm.client.Do(req)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, 0, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
+	var data struct {
+		LayersSize int64 `json:"LayersSize"`
+		Containers []struct {
+			SizeRw int64 `json:"SizeRw"`
+		} `json:"Containers"`
+		Volumes []struct {
+			UsageData struct {
+				Size int64 `json:"Size"`
+			} `json:"UsageData"`
+		} `json:"Volumes"`
+		BuildCache []struct {
+			Size int64 `json:"Size"`
+		} `json:"BuildCache"`
+		ImageUsage struct {
+			Reclaimable int64 `json:"Reclaimable"`
+			TotalSize   int64 `json:"TotalSize"`
+		} `json:"ImageUsage"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
+		return 0, 0, err
+	}
+
+	total := data.LayersSize
+	if total <= 0 && data.ImageUsage.TotalSize > 0 {
+		total = data.ImageUsage.TotalSize
+	}
+	for _, c := range data.Containers {
+		if c.SizeRw > 0 {
+			total += c.SizeRw
+		}
+	}
+	for _, v := range data.Volumes {
+		if v.UsageData.Size > 0 {
+			total += v.UsageData.Size
+		}
+	}
+	for _, b := range data.BuildCache {
+		if b.Size > 0 {
+			total += b.Size
+		}
+	}
+	if total < 0 {
+		total = 0
+	}
+
+	reclaimable := data.ImageUsage.Reclaimable
+	if reclaimable < 0 {
+		reclaimable = 0
+	}
+
+	return uint64(total), uint64(reclaimable), nil
+}
